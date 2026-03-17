@@ -97,7 +97,7 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 	cacheValue := app.Processor.DefaultVal() // 默认值
 	if !val.IsNil() {
 		if v := val.Int64(); v != 0 {
-			cacheValue = v
+			cacheValue = v + 1
 		}
 	} else {
 		g.Redis().Set(ctx, app.CacheKey(), cacheValue)
