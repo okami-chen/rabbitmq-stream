@@ -78,17 +78,6 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 		g.Log().Warningf(ctx, "error open stream %s", err.Error())
 		return err
 	}
-	// 不存在才定义
-	if exist, err := env.StreamExists(info.Queue); err == nil && !exist {
-		err = env.DeclareStream(info.Queue,
-			&stream.StreamOptions{
-				MaxLengthBytes: stream.ByteCapacity{}.GB(10),
-			})
-		if err != nil {
-			g.Log().Warningf(ctx, "error declaring stream %s", err.Error())
-			return err
-		}
-	}
 
 	val, err := g.Redis().Get(ctx, app.CacheKey())
 	if err != nil {
@@ -158,12 +147,43 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 	return nil
 }
 
-func NewBind(ctx context.Context, config *RabbitInfo, cfg *ConsumerInfo) {
-	env := rmq.NewEnvironment(config.Address(), nil)
-	conn, err := env.NewConnection(ctx)
+func NewBind(ctx context.Context, config *RabbitInfo, cfg *ConsumerInfo) error {
+
+	//定义 Stream
+	env, err := stream.NewEnvironment(
+		stream.NewEnvironmentOptions().
+			SetHost(config.Host).
+			SetPort(config.Port).
+			SetUser(config.Username).
+			SetPassword(config.Password).
+			SetRPCTimeout(time.Second * 10).
+			SetAddressResolver(stream.AddressResolver{
+				Host: config.Host,
+				Port: config.Port,
+			}))
+	if err != nil {
+		g.Log().Warningf(ctx, "error open stream %s", err.Error())
+		return err
+	}
+	defer env.Close()
+
+	// 不存在才定义
+	if exist, e := env.StreamExists(cfg.Queue); e == nil && !exist {
+		err = env.DeclareStream(cfg.Queue,
+			&stream.StreamOptions{
+				MaxLengthBytes: stream.ByteCapacity{}.GB(10),
+			})
+		if err != nil {
+			g.Log().Warningf(ctx, "error declaring stream %s", err.Error())
+			return err
+		}
+	}
+
+	environment := rmq.NewEnvironment(config.Address(), nil)
+	conn, err := environment.NewConnection(ctx)
 	if err != nil {
 		rmq.Error("Error opening connection", err)
-		return
+		return err
 	}
 	defer conn.Close(ctx)
 
@@ -177,4 +197,5 @@ func NewBind(ctx context.Context, config *RabbitInfo, cfg *ConsumerInfo) {
 			BindingKey:       routeKey,
 		})
 	}
+	return nil
 }
