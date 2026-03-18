@@ -24,17 +24,18 @@ type ProcessorInterface interface {
 }
 
 type ApplicationContext struct {
-	AppName   string
-	Name      string
-	Pk        string
-	First     int
-	Index     int
-	Total     int
-	Stop      bool
-	Done      chan error
-	Ctx       context.Context
-	Consumer  *stream.Consumer
-	Processor ProcessorInterface
+	AppName     string
+	Name        string
+	Pk          string
+	First       int
+	Index       int
+	Total       int
+	Stop        bool
+	Done        chan error
+	Ctx         context.Context
+	Consumer    *stream.Consumer
+	Environment *stream.Environment
+	Processor   ProcessorInterface
 }
 
 func (c *ApplicationContext) Process(consumerContext stream.ConsumerContext, message *amqp.Message) {

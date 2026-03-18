@@ -22,13 +22,24 @@ func Connect(ctx context.Context, app *ApplicationContext, cfg *RabbitInfo, info
 	//}
 
 	for {
-		if instance != nil && instance.Consumer != nil {
-			if err := instance.Consumer.Close(); err != nil {
-				instance = nil
-				g.Log().Infof(ctx, "failed to close %s@%03d %v", app.Name, app.Index, err)
-				time.Sleep(time.Second * grand.D(3, 15))
-				continue
+		if instance != nil {
+			if instance.Consumer != nil {
+				if err := instance.Consumer.Close(); err != nil {
+					g.Log().Infof(ctx, "failed to close %s@%03d %v", app.Name, app.Index, err)
+				}
+				instance.Consumer = nil
 			}
+
+			if instance.Environment != nil {
+				if err := instance.Environment.Close(); err != nil {
+					g.Log().Infof(ctx, "failed to close %s@%03d %v", app.Name, app.Index, err)
+					time.Sleep(time.Second * grand.D(3, 15))
+				}
+				instance.Environment = nil
+			}
+
+			instance = nil
+			continue
 		}
 
 		instance = app.Clone()
@@ -119,6 +130,7 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 		app.Process,
 		stream.NewConsumerOptions().
 			SetManualCommit().
+			SetClientProvidedName(app.AppName+"-"+app.Processor.Name()).
 			SetConsumerName(fmt.Sprintf(
 				"%s-%03d@%s",
 				app.Processor.Name(), app.Index, gtime.Now().Format("md-Hi")),
@@ -131,6 +143,7 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 	}
 
 	app.Consumer = consumer
+	app.Environment = env
 
 	channelClose := consumer.NotifyClose()
 	simple.SafeGo(ctx, func(ctx context.Context) {
