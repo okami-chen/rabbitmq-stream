@@ -13,5 +13,5 @@ func HashShardByCount(key string, shardCount int) int {
 		panic("shardCount must be > 0")
 	}
 	hash := javaHash(key)
-	return int(int32(hash) & 0x7fffffff % int32(shardCount))
+	return int((int32(hash) & 0x7fffffff) % int32(shardCount))
 }

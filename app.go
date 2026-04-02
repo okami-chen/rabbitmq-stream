@@ -40,17 +40,17 @@ type ApplicationContext struct {
 
 func (c *ApplicationContext) Process(consumerContext stream.ConsumerContext, message *amqp.Message) {
 
-	if c.Stop == true {
+	if c.Stop {
 		g.Log().Info(c.Ctx, "consumer context stop, %d", c.Index)
 		return
 	}
+
 	select {
 	case <-c.Ctx.Done():
 		c.Stop = true
 		g.Log().Info(c.Ctx, "consumer canceled, skipping message")
 		return
 	default:
-
 	}
 
 	if c.Pk == "" && c.Total > 1 {
@@ -76,24 +76,15 @@ func (c *ApplicationContext) Process(consumerContext stream.ConsumerContext, mes
 			return
 		}
 	}
+
 	ctx := context.WithValue(c.Ctx, consts.ContextKeyOffSet, consumerContext.Consumer.GetOffset())
 
 	if err = c.Processor.Process(ctx, j); err != nil {
 		g.Log().Errorf(c.Ctx, "%s", err)
 		c.Stop = true
-		c.Done <- errors.Wrap(err, "解析失败")
+		c.Done <- errors.Wrap(err, "处理失败")
 		return
 	}
-
-	//if consumerContext.Consumer.GetOffset()%100 == 0 {
-	//	ts := j.Get("ts").Int64()
-	//	now := gtime.NewFromTimeStamp(ts).Format("Y-m-d H:i:s")
-	//
-	//	g.Log().Infof(
-	//		c.Ctx, "offset %s -> %d -> %s",
-	//		c.CacheKey(), consumerContext.Consumer.GetOffset(), now,
-	//	)
-	//}
 
 	if err = c.Store(c.Ctx, consumerContext.Consumer.GetOffset()); err != nil {
 		c.Stop = true
@@ -125,8 +116,6 @@ func (c *ApplicationContext) CacheKey() string {
 }
 
 func (c *ApplicationContext) Store(ctx context.Context, value int64) error {
-	if _, err := g.Redis().Set(ctx, c.CacheKey(), value); err != nil {
-		return err
-	}
-	return nil
+	_, err := g.Redis().Set(ctx, c.CacheKey(), value)
+	return err
 }

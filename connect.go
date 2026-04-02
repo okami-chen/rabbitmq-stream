@@ -17,22 +17,18 @@ func Connect(ctx context.Context, app *ApplicationContext, cfg *RabbitInfo, info
 
 	var instance *ApplicationContext
 
-	//if app.First == 0 {
-	//	NewBind(ctx, cfg, info)
-	//}
-
 	for {
 		if instance != nil {
 			if instance.Consumer != nil {
 				if err := instance.Consumer.Close(); err != nil {
-					g.Log().Infof(ctx, "failed to close %s@%03d %v", app.Name, app.Index, err)
+					g.Log().Warningf(ctx, "failed to close consumer %s@%03d: %v", app.Name, app.Index, err)
 				}
 				instance.Consumer = nil
 			}
 
 			if instance.Environment != nil {
 				if err := instance.Environment.Close(); err != nil {
-					g.Log().Infof(ctx, "failed to close %s@%03d %v", app.Name, app.Index, err)
+					g.Log().Warningf(ctx, "failed to close environment %s@%03d: %v", app.Name, app.Index, err)
 					time.Sleep(time.Second * grand.D(3, 15))
 				}
 				instance.Environment = nil
@@ -45,27 +41,33 @@ func Connect(ctx context.Context, app *ApplicationContext, cfg *RabbitInfo, info
 		instance = app.Clone()
 		err := NewInstance(ctx, cfg, info, instance)
 		if err != nil {
-			g.Log().Warningf(ctx, "%s@%s-%d -> %v", info.Queue, app.Name, app.Index, err)
+			g.Log().Warningf(ctx, "%s@%s-%d -> failed to create instance: %v", info.Queue, app.Name, app.Index, err)
 			time.Sleep(grand.D(3, 15) * time.Second)
 			continue
 		}
 
-		// 阻塞等待错误或上下文取消
 		select {
 		case <-ctx.Done():
-			// 上下文取消，安全关闭实例
-			if err = instance.Consumer.Close(); err != nil {
-				instance = nil
-				g.Log().Infof(ctx, "failed to cancelled %s@%03d %v", app.Name, app.Index, err)
+			if instance.Consumer != nil {
+				if err = instance.Consumer.Close(); err != nil {
+					g.Log().Warningf(ctx, "failed to close consumer on context cancel %s@%03d: %v", app.Name, app.Index, err)
+				}
+			}
+			if instance.Environment != nil {
+				instance.Environment.Close()
 			}
 			return
 
 		case err = <-instance.Done:
 			if err != nil {
-				g.Log().Warningf(ctx, "%s@%d -> %v", info.Queue, instance.Index, err)
-				if err = instance.Consumer.Close(); err != nil {
-					instance = nil
-					g.Log().Infof(ctx, "failed to close %s@%03d %v", app.Name, app.Index, err)
+				g.Log().Warningf(ctx, "%s@%d -> consumer error: %v", info.Queue, instance.Index, err)
+				if instance.Consumer != nil {
+					if err = instance.Consumer.Close(); err != nil {
+						g.Log().Warningf(ctx, "failed to close consumer %s@%03d: %v", app.Name, app.Index, err)
+					}
+				}
+				if instance.Environment != nil {
+					instance.Environment.Close()
 				}
 				time.Sleep(time.Second * grand.D(3, 15))
 			}
@@ -86,24 +88,25 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 				Port: config.Port,
 			}))
 	if err != nil {
-		g.Log().Warningf(ctx, "error open stream %s", err.Error())
-		return err
+		return fmt.Errorf("failed to create environment: %w", err)
 	}
 
 	val, err := g.Redis().Get(ctx, app.CacheKey())
 	if err != nil {
-		return err
+		env.Close()
+		return fmt.Errorf("failed to get cache value: %w", err)
 	}
-	cacheValue := app.Processor.DefaultVal() // 默认值
+	cacheValue := app.Processor.DefaultVal()
 	if !val.IsNil() {
 		if v := val.Int64(); v != 0 {
 			cacheValue = v + 1
 		}
 	} else {
-		g.Redis().Set(ctx, app.CacheKey(), cacheValue)
+		if _, err := g.Redis().Set(ctx, app.CacheKey(), cacheValue); err != nil {
+			env.Close()
+			return fmt.Errorf("failed to set cache value: %w", err)
+		}
 	}
-
-	//g.Log().Infof(ctx, "value -> %s -> %d", app.Processor.Key(), cacheValue)
 
 	simple.SafeGo(ctx, func(ctx context.Context) {
 		ticker := time.NewTicker(5 * time.Second)
@@ -114,11 +117,11 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 				return
 			case <-ticker.C:
 				if env == nil {
-					app.Done <- fmt.Errorf("%s@%d  env is nil", info.Queue, app.Index)
+					app.Done <- fmt.Errorf("%s@%d environment is nil", info.Queue, app.Index)
 					return
 				}
 				if env.IsClosed() {
-					app.Done <- fmt.Errorf("%s@%d  env is closed", info.Queue, app.Index)
+					app.Done <- fmt.Errorf("%s@%d environment is closed", info.Queue, app.Index)
 					return
 				}
 			}
@@ -137,9 +140,8 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 			).
 			SetOffset(stream.OffsetSpecification{}.Offset(cacheValue)))
 	if err != nil {
-		g.Log().Warningf(ctx, "error declaring consumer %s", err.Error())
 		env.Close()
-		return err
+		return fmt.Errorf("failed to create consumer: %w", err)
 	}
 
 	app.Consumer = consumer
@@ -149,9 +151,10 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 	simple.SafeGo(ctx, func(ctx context.Context) {
 		select {
 		case event := <-channelClose:
-			er := fmt.Sprintf("consumer: %s , reason: %s", event.Name, event.Reason)
+			errMsg := fmt.Sprintf("consumer: %s, reason: %s", event.Name, event.Reason)
+			g.Log().Warningf(ctx, "%s@%d consumer closed: %s", info.Queue, app.Index, errMsg)
 			env.Close()
-			app.Done <- fmt.Errorf(er)
+			app.Done <- fmt.Errorf("%s", errMsg)
 		case <-ctx.Done():
 			return
 		}
@@ -161,8 +164,6 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 }
 
 func NewBind(ctx context.Context, config *RabbitInfo, cfg *ConsumerInfo) error {
-
-	//定义 Stream
 	env, err := stream.NewEnvironment(
 		stream.NewEnvironmentOptions().
 			SetHost(config.Host).
@@ -175,40 +176,46 @@ func NewBind(ctx context.Context, config *RabbitInfo, cfg *ConsumerInfo) error {
 				Port: config.Port,
 			}))
 	if err != nil {
-		g.Log().Warningf(ctx, "error open stream %s", err.Error())
-		return err
+		return fmt.Errorf("failed to create stream environment: %w", err)
 	}
 	defer env.Close()
 
-	// 不存在才定义
 	if exist, e := env.StreamExists(cfg.Queue); e == nil && !exist {
 		err = env.DeclareStream(cfg.Queue,
 			&stream.StreamOptions{
 				MaxLengthBytes: stream.ByteCapacity{}.GB(10),
 			})
 		if err != nil {
-			g.Log().Warningf(ctx, "error declaring stream %s", err.Error())
-			return err
+			return fmt.Errorf("failed to declare stream: %w", err)
 		}
+		g.Log().Infof(ctx, "stream %s created", cfg.Queue)
+	} else if e != nil {
+		return fmt.Errorf("failed to check stream existence: %w", e)
 	}
 
 	environment := rmq.NewEnvironment(config.Address(), nil)
 	conn, err := environment.NewConnection(ctx)
 	if err != nil {
-		rmq.Error("Error opening connection", err)
-		return err
+		return fmt.Errorf("failed to create AMQP connection: %w", err)
 	}
-	defer conn.Close(ctx)
+	defer func() {
+		if err := conn.Close(ctx); err != nil {
+			g.Log().Warningf(ctx, "failed to close AMQP connection: %v", err)
+		}
+	}()
 
 	management := conn.Management()
 
 	for _, routeKey := range cfg.Bind {
-		g.Log().Infof(ctx, "bind %s -> %s -> %s", config.Exchange, cfg.Queue, routeKey)
+		g.Log().Infof(ctx, "binding %s -> %s -> %s", config.Exchange, cfg.Queue, routeKey)
 		_, err = management.Bind(ctx, &rmq.ExchangeToQueueBindingSpecification{
 			SourceExchange:   config.Exchange,
 			DestinationQueue: cfg.Queue,
 			BindingKey:       routeKey,
 		})
+		if err != nil {
+			return fmt.Errorf("failed to bind %s -> %s with key %s: %w", config.Exchange, cfg.Queue, routeKey, err)
+		}
 	}
 	return nil
 }
