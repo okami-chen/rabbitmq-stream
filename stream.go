@@ -17,7 +17,7 @@ type RabbitMQConfig struct {
 func (r *RabbitMQConfig) Start(ctx context.Context, handles map[string][]ProcessorInterface) {
 	for index, consumer := range r.Consumers {
 		if consumer.Enable == false {
-			g.Log().Infof(ctx, "igonre stream %s@%s", consumer.Name, consumer.Queue)
+			g.Log().Warningf(ctx, "igonre stream %s@%s", consumer.Name, consumer.Queue)
 			continue
 		}
 		if objects, ok := handles[consumer.Name]; ok {
@@ -71,12 +71,15 @@ func (r *ConsumersConfig) Run(ctx context.Context, info *RabbitInfo, handle Proc
 		instance.Set("index", index)
 
 		if index == 0 {
-			NewBind(ctx, info, r.ConsumerInfo)
+			err := NewBind(ctx, info, r.ConsumerInfo)
+			if err != nil {
+				g.Log().Panic(ctx, err.Error())
+			}
 			time.Sleep(time.Second * 3)
 		}
 
 		simple.SafeGo(ctx, func(ctx context.Context) {
-			g.Log().Infof(ctx, "start -> %s@%s-%03d -> %03d", r.Name, instance.Name(), index, r.Num)
+			g.Log().Debugf(ctx, "start -> %s@%s-%03d -> %03d", r.Name, instance.Name(), index, r.Num)
 			app := &ApplicationContext{
 				AppName:   info.Exchange,
 				Name:      r.Name,

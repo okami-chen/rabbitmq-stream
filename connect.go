@@ -199,7 +199,7 @@ func NewBind(ctx context.Context, config *RabbitInfo, cfg *ConsumerInfo) error {
 		return fmt.Errorf("failed to create AMQP connection: %w", err)
 	}
 	defer func() {
-		if err := conn.Close(ctx); err != nil {
+		if err = conn.Close(ctx); err != nil {
 			g.Log().Warningf(ctx, "failed to close AMQP connection: %v", err)
 		}
 	}()

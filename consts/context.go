@@ -7,7 +7,7 @@ package consts
 
 type CtxKey string
 
-// ContextKey 上下文
+// ContextKeyOffSet ContextKey 上下文
 const (
 	ContextKeyOffSet CtxKey = "offSet"
 )

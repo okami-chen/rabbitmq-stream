@@ -41,7 +41,7 @@ type ApplicationContext struct {
 func (c *ApplicationContext) Process(consumerContext stream.ConsumerContext, message *amqp.Message) {
 
 	if c.Stop {
-		g.Log().Info(c.Ctx, "consumer context stop, %d", c.Index)
+		g.Log().Infof(c.Ctx, "consumer context stop, %d", c.Index)
 		return
 	}
 
@@ -66,7 +66,13 @@ func (c *ApplicationContext) Process(consumerContext stream.ConsumerContext, mes
 		return
 	}
 
-	pkVal := j.Get("data." + c.Pk).String()
+	pkVal := j.Get("after." + c.Pk).String()
+	if pkVal == "" {
+		pkVal = j.Get("before." + c.Pk).String()
+	}
+	if pkVal == "" {
+		pkVal = j.Get("data." + c.Pk).String()
+	}
 	if c.Total > 1 {
 		if mod := HashShardByCount(pkVal, c.Total); mod != c.Index {
 			if err = c.Store(c.Ctx, consumerContext.Consumer.GetOffset()); err != nil {
