@@ -117,11 +117,11 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 				return
 			case <-ticker.C:
 				if env == nil {
-					app.Done <- fmt.Errorf("%s@%d environment is nil", info.Queue, app.Index)
+					app.notifyDone(fmt.Errorf("%s@%d environment is nil", info.Queue, app.Index))
 					return
 				}
 				if env.IsClosed() {
-					app.Done <- fmt.Errorf("%s@%d environment is closed", info.Queue, app.Index)
+					app.notifyDone(fmt.Errorf("%s@%d environment is closed", info.Queue, app.Index))
 					return
 				}
 			}
@@ -154,7 +154,7 @@ func NewInstance(ctx context.Context, config *RabbitInfo, info *ConsumerInfo, ap
 			errMsg := fmt.Sprintf("consumer: %s, reason: %s", event.Name, event.Reason)
 			g.Log().Warningf(ctx, "%s@%d consumer closed: %s", info.Queue, app.Index, errMsg)
 			env.Close()
-			app.Done <- fmt.Errorf("%s", errMsg)
+			app.notifyDone(fmt.Errorf("%s", errMsg))
 		case <-ctx.Done():
 			return
 		}

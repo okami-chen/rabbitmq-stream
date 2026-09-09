@@ -62,7 +62,7 @@ func (c *ApplicationContext) Process(consumerContext stream.ConsumerContext, mes
 	if err != nil {
 		c.Stop = true
 		g.Log().Errorf(c.Ctx, "%s", err)
-		c.Done <- errors.Wrap(err, "解析失败")
+		c.notifyDone(errors.Wrap(err, "解析失败"))
 		return
 	}
 
@@ -88,13 +88,13 @@ func (c *ApplicationContext) Process(consumerContext stream.ConsumerContext, mes
 	if err = c.Processor.Process(ctx, j); err != nil {
 		g.Log().Errorf(c.Ctx, "%s", err)
 		c.Stop = true
-		c.Done <- errors.Wrap(err, "处理失败")
+		c.notifyDone(errors.Wrap(err, "处理失败"))
 		return
 	}
 
 	if err = c.Store(c.Ctx, consumerContext.Consumer.GetOffset()); err != nil {
 		c.Stop = true
-		c.Done <- errors.Wrap(err, "保存失败")
+		c.notifyDone(errors.Wrap(err, "保存失败"))
 		return
 	}
 
@@ -114,6 +114,22 @@ func (c *ApplicationContext) Clone() *ApplicationContext {
 		Ctx:       c.Ctx,
 		Consumer:  nil,
 		Processor: c.Processor.Clone(),
+	}
+}
+
+// notifyDone 上报实例异常，通知Connect重建实例。
+//
+// Done只会被Connect消费一次，之后这个实例就被丢弃了，而消费回调、探活ticker和
+// NotifyClose监听是三组互不知情的协程，实例挂掉时往往同时上报。这里必须用非阻塞发送：
+// 第一条错误足以触发重连，多余的直接丢弃，否则写满缓冲的那一方会永久阻塞，
+// 每次重连都泄漏一个协程以及它持有的env和consumer。
+func (c *ApplicationContext) notifyDone(err error) {
+	if err == nil || c.Done == nil {
+		return
+	}
+	select {
+	case c.Done <- err:
+	default:
 	}
 }
 
