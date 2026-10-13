@@ -13,65 +13,61 @@ import (
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 )
 
+// Connect 维持一个消费者实例，异常后自动重建，直到 ctx 被取消
 func Connect(ctx context.Context, app *ApplicationContext, cfg *RabbitInfo, info *ConsumerInfo) {
-
-	var instance *ApplicationContext
-
-	for {
-		if instance != nil {
-			if instance.Consumer != nil {
-				if err := instance.Consumer.Close(); err != nil {
-					g.Log().Warningf(ctx, "failed to close consumer %s@%03d: %v", app.Name, app.Index, err)
-				}
-				instance.Consumer = nil
-			}
-
-			if instance.Environment != nil {
-				if err := instance.Environment.Close(); err != nil {
-					g.Log().Warningf(ctx, "failed to close environment %s@%03d: %v", app.Name, app.Index, err)
-					time.Sleep(time.Second * grand.D(3, 15))
-				}
-				instance.Environment = nil
-			}
-
-			instance = nil
-			continue
-		}
-
-		instance = app.Clone()
-		err := NewInstance(ctx, cfg, info, instance)
-		if err != nil {
+	for ctx.Err() == nil {
+		instance := app.Clone()
+		if err := NewInstance(ctx, cfg, info, instance); err != nil {
 			g.Log().Warningf(ctx, "%s@%s-%d -> failed to create instance: %v", info.Queue, app.Name, app.Index, err)
-			time.Sleep(grand.D(3, 15) * time.Second)
+			if !sleepOrDone(ctx, reconnectInterval()) {
+				return
+			}
 			continue
 		}
 
 		select {
 		case <-ctx.Done():
-			if instance.Consumer != nil {
-				if err = instance.Consumer.Close(); err != nil {
-					g.Log().Warningf(ctx, "failed to close consumer on context cancel %s@%03d: %v", app.Name, app.Index, err)
-				}
-			}
-			if instance.Environment != nil {
-				instance.Environment.Close()
-			}
+			instance.close(ctx)
 			return
-
-		case err = <-instance.Done:
-			if err != nil {
-				g.Log().Warningf(ctx, "%s@%d -> consumer error: %v", info.Queue, instance.Index, err)
-				if instance.Consumer != nil {
-					if err = instance.Consumer.Close(); err != nil {
-						g.Log().Warningf(ctx, "failed to close consumer %s@%03d: %v", app.Name, app.Index, err)
-					}
-				}
-				if instance.Environment != nil {
-					instance.Environment.Close()
-				}
-				time.Sleep(time.Second * grand.D(3, 15))
+		case err := <-instance.Done:
+			g.Log().Warningf(ctx, "%s@%d -> consumer error: %v", info.Queue, instance.Index, err)
+			instance.close(ctx)
+			if !sleepOrDone(ctx, reconnectInterval()) {
+				return
 			}
 		}
+	}
+}
+
+// close 释放实例持有的 consumer 与 environment，只关闭一次
+func (c *ApplicationContext) close(ctx context.Context) {
+	if c.Consumer != nil {
+		if err := c.Consumer.Close(); err != nil {
+			g.Log().Warningf(ctx, "failed to close consumer %s@%03d: %v", c.Name, c.Index, err)
+		}
+		c.Consumer = nil
+	}
+	if c.Environment != nil {
+		if err := c.Environment.Close(); err != nil {
+			g.Log().Warningf(ctx, "failed to close environment %s@%03d: %v", c.Name, c.Index, err)
+		}
+		c.Environment = nil
+	}
+}
+
+func reconnectInterval() time.Duration {
+	return grand.D(3, 15) * time.Second
+}
+
+// sleepOrDone 等待 duration，ctx 被取消时提前返回 false
+func sleepOrDone(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

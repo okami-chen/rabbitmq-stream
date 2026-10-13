@@ -30,6 +30,7 @@ type ApplicationContext struct {
 	First       int
 	Index       int
 	Total       int
+	LogBody     bool
 	Stop        bool
 	Done        chan error
 	Ctx         context.Context
@@ -53,9 +54,11 @@ func (c *ApplicationContext) Process(consumerContext stream.ConsumerContext, mes
 	default:
 	}
 
+	// Run 启动时已校验；这里兜底，不能在消费回调里 panic（运行在 stream 客户端协程中，会带崩进程）
 	if c.Pk == "" && c.Total > 1 {
 		c.Stop = true
-		g.Log().Panicf(c.Ctx, "shard enabled and pk is nil")
+		c.notifyDone(errors.New("shard enabled and pk is empty"))
+		return
 	}
 
 	j, err := gjson.DecodeToJson(bytes.Join(message.Data, nil))
@@ -98,7 +101,12 @@ func (c *ApplicationContext) Process(consumerContext stream.ConsumerContext, mes
 		return
 	}
 
-	g.Log("bin").Infof(c.Ctx, "%s", j.MustToJson())
+	if c.LogBody {
+		g.Log("bin").Infof(c.Ctx, "%s", j.MustToJson())
+	} else {
+		g.Log().Debugf(c.Ctx, "%s@%d processed message, offset:%d, size:%d",
+			c.Name, c.Index, consumerContext.Consumer.GetOffset(), len(bytes.Join(message.Data, nil)))
+	}
 }
 
 func (c *ApplicationContext) Clone() *ApplicationContext {
@@ -109,6 +117,7 @@ func (c *ApplicationContext) Clone() *ApplicationContext {
 		First:     1,
 		Index:     c.Index,
 		Total:     c.Total,
+		LogBody:   c.LogBody,
 		Stop:      false,
 		Done:      make(chan error, 1),
 		Ctx:       c.Ctx,
